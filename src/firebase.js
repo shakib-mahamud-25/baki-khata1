@@ -10,6 +10,7 @@ const cfg = {
   authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: env.VITE_FIREBASE_PROJECT_ID,
   appId: env.VITE_FIREBASE_APP_ID,
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID, // optional, only for Google Analytics
 };
 
 export const configured = Boolean(cfg.apiKey && cfg.projectId && cfg.appId);
@@ -19,6 +20,14 @@ export const auth = app ? getAuth(app) : null;
 export const db = app
   ? initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) })
   : null;
+
+// Google Analytics (optional): starts only if VITE_FIREBASE_MEASUREMENT_ID is set and the browser supports it.
+// It records standard page/session data only. The app never sends names, amounts or ledger content.
+if (app && cfg.measurementId) {
+  import('firebase/analytics')
+    .then(({ getAnalytics, isSupported }) => isSupported().then((ok) => ok && getAnalytics(app)))
+    .catch(() => {});
+}
 
 // Optional recovery-code feature (needs the Cloud Function in /functions, which needs the Blaze plan).
 export const RECOVERY = env.VITE_RECOVERY_ENABLED === 'true';
