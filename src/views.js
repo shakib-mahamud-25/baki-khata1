@@ -37,7 +37,8 @@ export function pinView(c) {
 // ── App screens ─────────────────────────────────────────────────────────────
 export const topbar = (q) => `<div id="topbar"><div class="tb-logo">Baki <span>Khata</span></div><div class="tb-search"><input id="si" type="text" placeholder="${esc(t('search'))}" value="${esc(q)}"></div><div class="tb-actions"><button class="tb-btn" data-a="settings" title="${t('settings')}">⚙️</button></div></div>`;
 const banner = (a) => `<div id="balance-banner">${a.map(([k, v, c]) => `<div class="bb-card"><div class="bb-label">${t(k)}</div><div class="bb-value ${c}">${v}</div></div>`).join('')}</div>`;
-const filters = (flt) => `<div id="month-bar">${['all', 'due', 'paid'].map((x) => `<div class="filter-tag${flt === x ? ' active' : ''}" data-a="flt" data-v="${x}">${t(x)}</div>`).join('')}</div>`;
+const monthLabel = (m) => { const [y, mo] = m.split('-'); return new Date(y, mo - 1, 1).toLocaleString(getLang() === 'bn' ? 'bn-BD' : 'en-US', { month: 'long', year: 'numeric' }); };
+const filters = (ui, months) => `<div id="month-bar"><select class="month-select" id="msel"><option value="">${t('mAll')}</option>${months.map((m) => `<option value="${m}"${ui.month === m ? ' selected' : ''}>${esc(monthLabel(m))}</option>`).join('')}</select>${['all', 'due', 'paid'].map((x) => `<div class="filter-tag${ui.flt === x ? ' active' : ''}" data-a="flt" data-v="${x}">${t(x)}</div>`).join('')}</div>`;
 
 export const sum = (l) => {
   const e = l.exp.filter((x) => !x.removed).reduce((s, x) => s + x.amount, 0);
@@ -52,6 +53,7 @@ function row(l, e, role) {
   const rm = e.removed, isE = e.kind === 'e', key = `${l.id}:${e.id}`;
   let tg = '', bt = '';
   if (role === 'o' && e.seen === false) tg += `<span class="tg nw">${t('newB')}</span>`;
+  if (e.imported) tg += `<span class="tg im">${t('imp')}</span>`;
   if (rm) tg += `<span class="tg rd">${t(role === 'o' ? 'removed' : 'rmC')}</span>`;
   if (e.received) tg += `<span class="tg gr">${t('conf')}</span>`;
   if (e.flagged) tg += `<span class="tg yl">${t('flagged')}</span>`;
@@ -73,7 +75,7 @@ function card(l, role, ui) {
   let acts;
   if (role === 'c') {
     acts = l.blocked ? `<div class="note" style="margin:0;grid-column:1/-1">${t('blockedBy')}</div>`
-      : `<button class="store-action-btn sab-expense" data-a="mExp" data-v="${l.id}">➕ ${t('expense')}</button>${isPaid ? '' : `<button class="store-action-btn sab-pay" data-a="mPay" data-v="${l.id}">💳 ${t('pay')}</button>`}${l.shopId ? '' : `<button class="store-action-btn sab-del" data-a="delStore" data-v="${l.id}">🗑 ${t('del')}</button>`}`;
+      : `<button class="store-action-btn sab-expense" data-a="mExp" data-v="${l.id}">➕ ${t('expense')}</button>${isPaid ? '' : `<button class="store-action-btn sab-pay" data-a="mPay" data-v="${l.id}">💳 ${t('pay')}</button>`}${l.shopId ? '' : `<button class="store-action-btn sab-pdf" data-a="mMerge" data-v="${l.id}">🔗 ${t('linkToShop')}</button><button class="store-action-btn sab-del" data-a="delStore" data-v="${l.id}">🗑 ${t('del')}</button>`}`;
   } else {
     const sms = `sms:${esc(l.custPhone || '')}?body=${encodeURIComponent(l.custName + ', ' + t('balDue') + fmt(s.b) + ' — ' + l.shopName)}`;
     acts = l.blocked ? `<button class="store-action-btn sab-pay" data-a="unblock" data-v="${l.id}">${t('unblock')}</button>`
@@ -86,20 +88,37 @@ function card(l, role, ui) {
 const visible = (ls, role, ui) => ls.filter((l) => nameOf(l, role).toLowerCase().includes(ui.q.toLowerCase().trim()) && (ui.flt === 'all' || (ui.flt === 'due') === (sum(l).b > 0)));
 
 export function dashboard(c) {
-  const { profile, ledgers, ui, loaded } = c, role = profile.role;
+  const { profile, ui, loaded } = c, role = profile.role, all = c.ledgers;
   if (!loaded) return `<div id="main"><div class="note">${t('loading')}</div></div>`;
+  // Month filter (as in v1): only entries dated in the chosen month are counted and listed.
+  const months = [...new Set(all.flatMap((l) => l.exp.concat(l.pay)).map((e) => e.date.slice(0, 7)).concat(ui.month ? [ui.month] : []))].sort().reverse();
+  const inM = (e) => !ui.month || e.date.startsWith(ui.month);
+  const ledgers = all.map((l) => ({ ...l, exp: l.exp.filter(inM), pay: l.pay.filter(inM) }));
   let e = 0, p = 0; ledgers.forEach((l) => { const s = sum(l); e += s.e; p += s.p; });
   if (role === 'c') {
     const list = visible(ledgers, 'c', ui).map((l) => card(l, 'c', ui)).join('') || `<div class="ledger-empty">${t('empty')}</div>`;
     return banner([['tExp', fmt(e), 'red'], ['tPaid', fmt(p), 'green'], ['out', fmt(e - p), e - p > 0 ? 'red' : 'green'], ['shops', bd(ledgers.length), 'blue']]) +
-      `<div id="main">${filters(ui.flt)}<div id="action-bar"><button class="btn btn-primary btn-full" data-a="mStore">＋ ${t('addStore')}</button></div>${list}</div>`;
+      `<div id="main">${filters(ui, months)}<div id="action-bar"><button class="btn btn-primary btn-full" data-a="mStore">＋ ${t('addStore')}</button></div>${list}</div>`;
   }
   const rp = ledgers.flatMap((l) => l.pay.filter((x) => !x.removed).map((x) => ({ l, x }))).sort((a, b) => b.x.date.localeCompare(a.x.date) || ms(b.x) - ms(a.x)).slice(0, 3);
   const strip = rp.length ? `<div class="sec-t">${t('recent')}</div><div class="store-card" style="padding:0 16px">${rp.map(({ l, x }) => `<div class="ledger-item"><div class="ledger-icon pay">💳</div><div class="ledger-details"><div class="ledger-desc">${esc(nameOf(l, 'o'))}</div><div class="ledger-date">${fd(x.date)}${x.received ? `<span class="tg gr">${t('conf')}</span>` : ''}</div></div><div class="ledger-amount pay">${fmt(x.amount)}</div><button class="ib ${x.received ? 'on' : ''}" data-a="rc" data-v="${l.id}:${x.id}">✓</button></div>`).join('')}</div>` : '';
   const list = visible(ledgers, 'o', ui).sort((a, b) => sum(b).b - sum(a).b).map((l) => card(l, 'o', ui)).join('') || `<div class="ledger-empty">${t('empty')}</div>`;
+  const code = c.shopCode ? c.shopCode.slice(0, 4) + '-' + c.shopCode.slice(4) : '…';
   return banner([['totDue', fmt(e - p), e - p > 0 ? 'red' : 'green'], ['collected', fmt(p), 'green'], ['custs', bd(ledgers.length), 'blue']]) +
-    `<div id="main"><div class="note">🏪 ${t('listed')} <b>${esc(profile.shopName)}</b> · ${esc(profile.area)}</div>${strip}${filters(ui.flt)}${list}</div>`;
+    `<div id="main"><div class="note">🏪 ${t('listed')} <b>${esc(profile.shopName)}</b> · ${esc(profile.area)}<br>🔑 ${t('shopCode')}: <b style="letter-spacing:1px">${esc(code)}</b> <button class="ib" style="width:auto;padding:0 10px" data-a="copy">${t('copy')}</button><br><small>${t('codeHint')}</small></div>${strip}${filters(ui, months)}${list}</div>`;
 }
 
-// Used by the "Add Store" dialog
-export const directoryRows = (shops, linkedIds) => shops.map((u) => `<div class="dir-item"><div class="store-avatar" style="background:${COLORS[hash(u.id) % 8]}">${esc((u.shopName || '?').slice(0, 2).toUpperCase())}</div><div class="store-info"><div class="store-name">${esc(u.shopName)}</div><div class="store-meta">${esc(u.ownerName)} · ${esc(u.area)}</div></div>${linkedIds.includes(u.id) ? `<span class="tg gr">${t('linked')}</span>` : `<button class="btn btn-accent" style="padding:8px 14px" data-a="link" data-v="${u.id}">${t('link')}</button>`}</div>`).join('') || `<div class="ledger-empty">${t('empty')}</div>`;
+// Used by the "Add Store" dialog: filters the directory by name/owner/area; a shop found by its code goes first.
+export function dirHtml(shops, linkedIds, q, codeShop) {
+  const s = q.trim().toLowerCase();
+  let list = shops.filter((u) => !s || [u.shopName, u.ownerName, u.area].some((x) => (x || '').toLowerCase().includes(s)));
+  if (codeShop) list = [{ ...codeShop, byCode: true }, ...list.filter((u) => u.id !== codeShop.id)];
+  return list.map((u) => `<div class="dir-item"><div class="store-avatar" style="background:${COLORS[hash(u.id) % 8]}">${esc((u.shopName || '?').slice(0, 2).toUpperCase())}</div><div class="store-info"><div class="store-name">${esc(u.shopName)}${u.byCode ? `<span class="tg im">${t('codeFound')}</span>` : ''}</div><div class="store-meta">${esc(u.ownerName)} · ${esc(u.area)}</div></div>${linkedIds.includes(u.id) ? `<span class="tg gr">${t('linked')}</span>` : `<button class="btn btn-accent" style="padding:8px 14px" data-a="link" data-v="${u.id}">${t('link')}</button>`}</div>`).join('') || `<div class="ledger-empty">${t('noShopFound')}</div>`;
+}
+
+// Footer + developer dialog, same as v1.
+export const footerHtml = () => `<footer id="footer"><div>© <strong>Baki Khata</strong> 2026 — ${t('rights')}</div><hr class="footer-divider"/><div>${t('devBy')} <button class="dev-link" data-a="social">Shakib Mahamud</button></div></footer>
+<div id="social-overlay" data-a="socialBg"><div class="social-box"><div class="social-title">Shakib Mahamud</div><div class="social-sub">${t('connect')}</div><div class="social-icons">
+<a class="social-icon-btn" href="https://www.facebook.com/mahamud.deepto" target="_blank" rel="noopener"><svg width="32" height="32" viewBox="0 0 24 24" fill="#1877f2"><path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.313 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.887v2.267h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/></svg><span class="social-icon-label">Facebook</span></a>
+<a class="social-icon-btn" href="https://shakib-mahamud.vercel.app" target="_blank" rel="noopener"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--navy)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span class="social-icon-label">${t('portfolio')}</span></a>
+</div><button class="social-close-btn" data-a="socialClose">${t('cls')}</button></div></div>`;

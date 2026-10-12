@@ -70,6 +70,9 @@ Without this step the app shows "Not allowed" errors, because production mode bl
    | `VITE_FIREBASE_PROJECT_ID` | your `projectId` |
    | `VITE_FIREBASE_APP_ID` | your `appId` |
 
+   **Only these four are required.** `storageBucket` and `messagingSenderId` are not used by this app, so ignore them.
+   **Optional, for Google Analytics:** if you enabled Analytics in Firebase, also add `VITE_FIREBASE_MEASUREMENT_ID` = your `measurementId` (starts with `G-`). Without it, analytics stays off. Data appears in Firebase → Analytics (or Google Analytics) within about a day; use the *Realtime* view to check it works.
+
 5. Click **Deploy**. After about a minute you get an address like `https://baki-khata-xyz.vercel.app`.
 6. **Back in Firebase:** Authentication → **Settings → Authorized domains → Add domain** → paste the Vercel address **without** `https://` (for example `baki-khata-xyz.vercel.app`). This is required for password-reset and email-verification links to work.
 
@@ -94,12 +97,20 @@ Open your Vercel address. Use two browsers (or one normal window and one private
 9. Switch to **বাংলা** in Settings or on the login screen.
 
 ### Test the security rules (strongly recommended before real students use it)
-In Firebase → Firestore → Rules → **Rules Playground**, run these (all should be **denied**):
-- *get* `/entries/anyId` while **unauthenticated**.
-- *update* `/users/<customer uid>` as that customer, setting `role` to `o`.
-- *create* `/entries/x` as a customer with `amount: -5` or with a `custId` that is not theirs.
 
-If any of them is **allowed**, do not go live. Fix the rules first.
+Think of the rules as the database's bouncer. These tests pretend to be a *cheater* and check that the bouncer says **no**. In Firebase → Firestore → Rules → **Rules Playground**, every test below should come back **Denied**. Denied is the *good* result.
+
+1. **A customer tries to promote themselves to shop owner.**
+   Every account is either a customer (`role: "c"`) or a shop owner (`role: "o"`), fixed at signup. The cheat: a customer edits their own profile and changes `role` to `"o"` so they can act like a shop. Playground: *update*, location `/users/<some customer's uid>`, signed in as that same uid, new data `{"role": "o"}`.
+2. **A customer records a negative amount.**
+   A fake "expense" of −5 taka would quietly reduce what they owe. Playground: *create* on `/entries/test1` as a customer with `"amount": -5` (the rule only accepts whole numbers above zero).
+3. **A customer writes an entry in someone else's name.**
+   Each entry stores a `custId` (the customer it belongs to). The cheat: use another person's `custId` to add or hide entries in their ledger. Playground: *create* on `/entries/test2` as customer A with `custId` set to customer B's uid.
+4. **A stranger reads data.** *get* `/entries/anyId` while **unauthenticated**.
+
+If any of these says **Allowed**, do not go live. The normal, honest actions are already proven by your app test in the steps above: if linking, adding expenses and confirming payments worked, the rules let the right things through. (The playground cannot easily imitate the server timestamp the app adds, so don't use it to test *allowed* actions.)
+
+> **Whenever `firestore.rules` changes in an update, paste the new version into Firebase → Firestore → Rules and press Publish again.** The website update alone does not change the database's rules.
 
 ---
 
@@ -136,6 +147,77 @@ New phone-only owners will then be shown a one-time recovery code at signup. If 
 
 ---
 
+## 8. Install it like an app (PWA)
+
+The app is already a *Progressive Web App*: it has a manifest, icons and a service worker (`public/manifest.webmanifest`, `public/icons/`, `public/sw.js`). Nothing to build or configure. It needs HTTPS, which Vercel gives you automatically.
+
+**Installing (what you tell users):**
+- **Android (Chrome):** open the site → menu (⋮) → **Install app** (or *Add to Home screen*).
+- **iPhone / iPad:** must be **Safari** → Share button → **Add to Home Screen**.
+- **Desktop (Chrome/Edge):** click the install icon at the right end of the address bar.
+
+**What works offline:** the app opens without internet, and data you have already loaded is still readable. Entries you add offline are saved on the phone and sent automatically when the connection returns. A first-time login needs internet.
+
+**How to check it is working:** open your site in Chrome → DevTools (F12) → **Application** tab → *Manifest* should list the icons without errors, and *Service workers* should show `sw.js` as activated. The **Lighthouse** tab also has an "Installable" check.
+
+**Updating:** when you deploy a new version, users get it the next time they open the app (sometimes after closing and reopening it once). `sw.js` is served with `no-cache` for this reason, so don't change that header in `vercel.json`.
+
+**Not included:** push notifications (they need Firebase Cloud Messaging and a server function, i.e. the Blaze plan), and the iPhone install prompt is manual (Apple does not allow websites to trigger it).
+
+---
+
+## 9. Before launch: delete the test data
+
+Your tests created fake logins and records. One command removes them, and it is free (no Blaze plan needed). It needs Node.js on your computer, once.
+
+**One-time setup**
+1. Firebase console → ⚙️ Project settings → **Service accounts → Generate new private key**. Save the file as `serviceAccount.json` next to `package.json`. **Never upload this file to GitHub** (`.gitignore` already blocks it).
+2. In the project folder: `npm install firebase-admin --no-save`
+
+**Step 1: look first (deletes nothing)**
+```
+node scripts/delete-test-data.mjs --dry-run
+```
+It prints how many logins and records would be deleted and kept.
+
+**Step 2: delete**
+- Delete **everything** (start 100% clean):
+  ```
+  node scripts/delete-test-data.mjs
+  ```
+- Or **keep your own real accounts** and delete the rest. Use emails, or the phone number for a phone-only shop owner:
+  ```
+  node scripts/delete-test-data.mjs --keep myown@gmail.com,01711000333
+  ```
+  A kept account keeps its profile, shop listing, shop code and private ledgers. A linked ledger is kept only if **both** sides are kept accounts. Everything else (logins, ledgers, entries, notes, codes) is removed.
+
+Before deleting, the script asks you to **type your project id** to confirm. Deleting is permanent, so always run `--dry-run` first. It lists every account it will delete, so check that your real ones are not on the list.
+
+**Then clean your test devices:** each phone/browser you tested on keeps a local PIN and an offline copy of the test data. In Chrome: site settings → **Clear data** for your site (or DevTools → Application → *Clear site data*). If you installed the PWA, uninstall and reinstall it.
+
+**Analytics:** test visits stay in Google Analytics and cannot be deleted. Just read reports from your launch date onward.
+
+**Fallback by hand (no Node needed):** Firebase → Authentication → **Users** → tick the test accounts → *Delete accounts*; then Firestore → **Data** → for each of `users`, `shops`, `ledgers`, `entries`, `notes`, `shopCodes`, `recovery` click **⋮ → Delete collection**. Do both parts, because deleting only one leaves orphans.
+
+---
+
+## 10. Shop codes: linking an old private ledger to a shop that joined later
+
+Scenario: a student kept "Hasan Canteen" as a **private ledger** (not on the app). Months later Hasan opens a shop account.
+
+1. **Hasan** opens his dashboard. At the top is his private **shop code** (8 characters, like `K7M2-QX9R`). Settings has a **Copy** button and **New shop code** (use it if the code was shared by mistake; the old one stops working). Customers cannot see this code in the shop list, only the shop owner sees it.
+2. The **student** asks Hasan for the code, opens the private ledger card and taps **🔗 Link to shop**, types the code, checks the shop name shown, and confirms.
+3. The student's old entries are **copied** into a normal linked ledger and the private ledger is removed. Hasan sees the history straight away, each old entry tagged **"from customer notes"**, with the original dates, and can ⚠ flag anything that looks wrong.
+
+Also, in **Add Store**, the search box accepts a **shop name or a shop code**. Typing a code shows that exact shop at the top of the list.
+
+Things to know:
+- The code only proves "the shop told me this"; anyone can still link to any shop from the directory. Imported history is written by the customer, so the tag and the flag button are how the owner stays in control.
+- A single import can copy up to **450 entries**.
+- Shops that existed before this update get their code automatically the next time the owner opens the app.
+
+---
+
 ## Troubleshooting
 
 | Problem | Cause and fix |
@@ -146,6 +228,7 @@ New phone-only owners will then be shown a one-time recovery code at signup. If 
 | Reset or verification email links fail | The Vercel address is missing from Authentication → Settings → **Authorized domains** (step 3.6). |
 | Vercel build fails | Make sure `package.json` and `package-lock.json` are at the repo's top level. The project needs Node 20.19+ (Vercel's default is fine). |
 | `npm audit` shows 4 "high" warnings | These come from a server-side part of a Firebase dependency (`@grpc/grpc-js`) that is **not shipped to browsers**. Ignore them. **Do not** run `npm audit fix --force`: it would downgrade Firebase and break the app. |
+| Link to shop / shop code says "Not allowed" | The updated `firestore.rules` was not re-published (see the note in step 4). |
 | Shop is missing from a customer's *Add Store* list | The owner has not signed up yet. Only registered owners appear there. |
 | Someone forgot their PIN | Tap "Forgot PIN? Log in again", log in with email/password, and create a new PIN. |
 | Page is blank after an update | Hard refresh (Ctrl/Cmd + Shift + R). |

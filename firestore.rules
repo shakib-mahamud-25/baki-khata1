@@ -65,10 +65,11 @@ service cloud.firestore {
     }
 
     // ── entries: expense ('e') / payment ('p'), money in integer paisa ──
-    function ledgerOf(id) { return get(/databases/$(database)/documents/ledgers/$(id)).data; }
+    function ledgerOf(id) { return getAfter(/databases/$(database)/documents/ledgers/$(id)).data; }
     function validEntry(d) {
-      return d.keys().hasOnly(['ledgerId', 'custId', 'shopId', 'kind', 'amount', 'desc', 'date', 'removed', 'flagged', 'received', 'seen', 'createdAt'])
+      return d.keys().hasOnly(['ledgerId', 'custId', 'shopId', 'kind', 'amount', 'desc', 'date', 'removed', 'flagged', 'received', 'seen', 'createdAt', 'imported'])
         && d.custId == me() && d.kind in ['e', 'p']
+        && (!('imported' in d) || (d.imported == true && d.shopId != null))   // history copied from a private ledger
         && d.amount is int && d.amount > 0 && d.amount <= 1000000000
         && d.desc is string && d.desc.size() <= 200
         && d.date is string && d.date.size() == 10
@@ -93,6 +94,16 @@ service cloud.firestore {
           && request.resource.data.seen is bool)
       );
       allow delete: if signedIn() && resource.data.custId == me() && resource.data.shopId == null;
+    }
+
+    // ── shopCodes: private per-shop code. Anyone signed in can look up ONE code they were given;
+    //    nobody can list codes except an owner listing their own. ──
+    match /shopCodes/{c} {
+      allow get: if signedIn();
+      allow list: if signedIn() && resource.data.shopId == me();
+      allow create: if isOwner() && c.matches('^[A-HJ-NP-Z2-9]{8}$')
+        && request.resource.data.keys().hasOnly(['shopId']) && request.resource.data.shopId == me();
+      allow delete: if signedIn() && resource.data.shopId == me();
     }
 
     // ── notes: the owner's private nickname for a customer ──

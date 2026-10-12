@@ -16,6 +16,9 @@ v1 was a single-file, browser-only app. v2 keeps v1's look and moves everything 
 - **Customer writes, shop views.** No approval flow, so shopkeepers never have to update anything.
 - **Honest history.** When a customer deletes an entry on a linked shop, the shop still sees it struck through ("removed by customer"). Entries are never edited.
 - **Private ledgers.** A shop that is not on the app is kept as a private ledger, visible only to that customer, stored in their account (survives a new phone or cleared cache).
+- **Shop codes.** Each shop has a private code that only the owner sees. A customer who is given it can link an old private ledger to the real shop; the history is copied across and shown to the shop tagged "from customer notes". The code also works in the Add Store search, next to name search.
+- **Month filter** (All Time / any month) plus All / Due / Paid on both customer and owner dashboards.
+- **Installable PWA** (home-screen icon, loads offline).
 - **Roles are permanent** and enforced by the database rules.
 - **Daily login = 6-digit PIN** on that device. A new device needs email/password first. The PIN never leaves the device; five wrong tries log you out.
 - **English / বাংলা**, selectable in Settings (and on the login screen). Bangla digits are optional.
@@ -45,9 +48,10 @@ src/
   pin.js                device PIN (salted PBKDF2 hash, localStorage only)
   i18n.js               English + Bangla strings, money/date formatting
   styles.css            v1 stylesheet + a few v2 additions
-public/favicon.svg
+public/favicon.svg, manifest.webmanifest, sw.js, icons/   PWA files
 functions/              OPTIONAL recovery-code Cloud Function (needs Blaze plan)
 scripts/                admin-reset-password.mjs (free manual password reset)
+                        delete-test-data.mjs (one-command cleanup before launch)
 docs/SETUP.md           step-by-step: GitHub, Firebase, Vercel
 ```
 
@@ -80,5 +84,7 @@ Everything below can run on free plans for a campus-scale pilot:
 - A customer's name/area/phone are copied onto each ledger when they link; later profile edits don't update old ledgers.
 - No push notifications yet (the owner sees updates live while the app is open).
 - Excel/PDF export from v1 is not included yet.
+- Importing a private ledger into a shop copies at most 450 entries at once.
+- Shop codes are not a security gate (anyone can already link to any listed shop); they identify the shop and make history import explicit.
 - The Bangla text is a first draft and should be reviewed by a native speaker.
 - The security rules were written carefully but have not been run against a live Firebase project by the author. Test them with the checklist in docs/SETUP.md before real use.

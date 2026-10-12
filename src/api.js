@@ -7,6 +7,7 @@
 //                        Linked ledger id = `${customerUid}_${shopId}` so a link can't be duplicated.
 //   entries/{id}         expense ('e') or payment ('p'). Money is integer paisa. Never edited, only
 //                        marked removed (linked ledgers) so the shop keeps an honest history.
+//   shopCodes/{CODE}     private shop code -> shopId (see below).
 //   notes/{ledgerId}     the shop owner's private nickname for a customer.
 //   recovery/{uid}       hash of the owner's recovery code (write-only; read by the Cloud Function).
 import { auth, db, app, RECOVERY, FN_REGION } from './firebase.js';
@@ -108,10 +109,13 @@ export const linkShop = (profile, uid, shop) =>
 export const addPrivate = (profile, uid, name) =>
   addDoc(collection(db, 'ledgers'), { ...ledgerBase(profile, uid), shopId: null, shopName: null, name });
 export async function deleteLedger(ledger, entries) {
-  const b = writeBatch(db);
-  entries.forEach((e) => b.delete(doc(db, 'entries', e.id)));
-  b.delete(doc(db, 'ledgers', ledger.id));
-  await b.commit();
+  const ids = entries.map((e) => e.id);
+  for (let i = 0; i < ids.length; i += 400) { // Firestore batches hold at most 500 writes
+    const b = writeBatch(db);
+    ids.slice(i, i + 400).forEach((id) => b.delete(doc(db, 'entries', id)));
+    await b.commit();
+  }
+  await deleteDoc(doc(db, 'ledgers', ledger.id));
 }
 export const addEntry = (l, kind, amount, desc, date) =>
   addDoc(collection(db, 'entries'), {
@@ -121,6 +125,52 @@ export const addEntry = (l, kind, amount, desc, date) =>
 // Linked ledger: soft-remove (the shop still sees it struck through). Private ledger: real delete.
 export const removeEntry = (e) =>
   e.shopId ? updateDoc(doc(db, 'entries', e.id), { removed: true, seen: false }) : deleteDoc(doc(db, 'entries', e.id));
+
+// Shop codes: a private code per shop, shown only to the owner. A customer who is given the code can
+// look the shop up and link an old private ledger (with history) to it.
+//   shopCodes/{CODE} -> { shopId }   (CODE = 8 characters, no I/O/0/1)
+const CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
+export const normCode = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+export const isCode = (s) => CODE_RE.test(normCode(s));
+function genShopCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return [...crypto.getRandomValues(new Uint8Array(8))].map((b) => chars[b % chars.length]).join('');
+}
+export async function ensureShopCode(uid) {
+  const s = await getDocs(query(collection(db, 'shopCodes'), where('shopId', '==', uid)));
+  if (!s.empty) return s.docs[0].id;
+  for (let i = 0; ; i++) {
+    const c = genShopCode();
+    try { await setDoc(doc(db, 'shopCodes', c), { shopId: uid }); return c; } catch (e) { if (i >= 2) throw e; }
+  }
+}
+export async function rotateShopCode(uid, oldCode) {
+  const c = genShopCode(), b = writeBatch(db);
+  b.set(doc(db, 'shopCodes', c), { shopId: uid });
+  if (oldCode) b.delete(doc(db, 'shopCodes', oldCode));
+  await b.commit();
+  return c;
+}
+export async function shopByCode(code) {
+  const c = normCode(code);
+  if (!CODE_RE.test(c)) return null;
+  const s = await getDoc(doc(db, 'shopCodes', c));
+  if (!s.exists()) return null;
+  const sh = await getDoc(doc(db, 'shops', s.data().shopId));
+  return sh.exists() ? { id: sh.id, ...sh.data() } : null;
+}
+// Copy a private ledger's history into the (new or existing) linked ledger with this shop, then remove
+// the private one. The copy is a single atomic batch; the clean-up afterwards can safely be retried.
+export async function importPrivate(profile, uid, priv, entries, shop, linkedExists) {
+  const lid = `${uid}_${shop.id}`, b = writeBatch(db);
+  if (!linkedExists) b.set(doc(db, 'ledgers', lid), { ...ledgerBase(profile, uid), shopId: shop.id, shopName: shop.shopName, name: null });
+  entries.forEach((e) => b.set(doc(collection(db, 'entries')), {
+    ledgerId: lid, custId: uid, shopId: shop.id, kind: e.kind, amount: e.amount, desc: e.desc, date: e.date,
+    removed: false, flagged: false, received: false, seen: false, imported: true, createdAt: serverTimestamp(),
+  }));
+  await b.commit();
+  try { await deleteLedger(priv, entries); } catch (e) { console.warn('private ledger clean-up incomplete', e); }
+}
 
 // ── Owner actions ───────────────────────────────────────────────────────────
 export const setReceived = (id, v) => updateDoc(doc(db, 'entries', id), { received: v });

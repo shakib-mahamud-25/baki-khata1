@@ -307,3 +307,6 @@ html{scroll-padding-top:env(safe-area-inset-top,0px)}
 .note{font-size:.8rem;color:var(--text2);background:var(--surface2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px}
 .flash{animation:fl 1.6s}@keyframes fl{0%,60%{box-shadow:0 0 0 3px var(--accent)}}
 .dim{opacity:.6}
+
+#app{flex:1;display:flex;flex-direction:column;min-width:0}#dyn{flex:1}
+.tg.im{background:var(--blue-bg);color:var(--blue)}
