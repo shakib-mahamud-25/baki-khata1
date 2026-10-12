@@ -1,0 +1,122 @@
+rules_version = '2';
+
+// Baki Khata v2 security rules.
+// Customers write; shop owners read (and may confirm/flag payments, block, nickname).
+// Nobody can read another person's data. Roles are fixed at signup. Entries are never edited.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function roleOf(u) { return get(/databases/$(database)/documents/users/$(u)).data.role; }
+    function isCustomer() { return signedIn() && roleOf(me()) == 'c'; }
+    function isOwner() { return signedIn() && roleOf(me()) == 'o'; }
+    function changed(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function str(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
+
+    // ── users: private profile, role can never change ──
+    match /users/{u} {
+      allow read: if signedIn() && me() == u;
+      allow create: if signedIn() && me() == u
+        && request.resource.data.keys().hasOnly(['role', 'name', 'area', 'lang', 'createdAt', 'shopName', 'phone'])
+        && request.resource.data.role in ['c', 'o']
+        && str(request.resource.data.name, 60) && str(request.resource.data.area, 80)
+        && request.resource.data.lang in ['en', 'bn']
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.role == 'o'
+              ? str(request.resource.data.shopName, 60)
+              : !('shopName' in request.resource.data));
+      allow update: if signedIn() && me() == u
+        && request.resource.data.role == resource.data.role
+        && changed(['lang', 'name', 'area', 'phone']);
+    }
+
+    // ── shops: public directory (any signed-in user may list; only the owner writes) ──
+    match /shops/{s} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && me() == s && roleOf(s) == 'o'
+        && request.resource.data.keys().hasOnly(['shopName', 'ownerName', 'area'])
+        && str(request.resource.data.shopName, 60) && str(request.resource.data.ownerName, 60)
+        && str(request.resource.data.area, 80);
+    }
+
+    // ── ledgers: customer <-> shop (shopId == null means a private ledger) ──
+    function validLedger(d, id) {
+      return d.keys().hasOnly(['custId', 'shopId', 'name', 'shopName', 'custName', 'custArea', 'custPhone', 'blocked', 'createdAt'])
+        && d.custId == me() && d.blocked == false && d.createdAt == request.time
+        && str(d.custName, 60) && str(d.custArea, 80)
+        && (d.custPhone == null || str(d.custPhone, 20))
+        && (
+          (d.shopId == null && str(d.name, 60) && d.shopName == null)
+          ||
+          (d.shopId is string && id == me() + '_' + d.shopId   // one link per customer+shop
+            && exists(/databases/$(database)/documents/shops/$(d.shopId))
+            && d.name == null && str(d.shopName, 60))
+        );
+    }
+    match /ledgers/{l} {
+      allow read: if signedIn() && (resource.data.custId == me() || resource.data.shopId == me());
+      allow create: if isCustomer() && validLedger(request.resource.data, l);
+      // the shop owner may only toggle "blocked"
+      allow update: if signedIn() && resource.data.shopId == me()
+        && changed(['blocked']) && request.resource.data.blocked is bool;
+      // only private ledgers can be deleted; linked history stays with the shop
+      allow delete: if signedIn() && resource.data.custId == me() && resource.data.shopId == null;
+    }
+
+    // ── entries: expense ('e') / payment ('p'), money in integer paisa ──
+    function ledgerOf(id) { return get(/databases/$(database)/documents/ledgers/$(id)).data; }
+    function validEntry(d) {
+      return d.keys().hasOnly(['ledgerId', 'custId', 'shopId', 'kind', 'amount', 'desc', 'date', 'removed', 'flagged', 'received', 'seen', 'createdAt'])
+        && d.custId == me() && d.kind in ['e', 'p']
+        && d.amount is int && d.amount > 0 && d.amount <= 1000000000
+        && d.desc is string && d.desc.size() <= 200
+        && d.date is string && d.date.size() == 10
+        && d.removed == false && d.flagged == false && d.received == false
+        && d.seen == (d.shopId == null)
+        && d.createdAt == request.time
+        && ledgerOf(d.ledgerId).custId == me()
+        && ledgerOf(d.ledgerId).shopId == d.shopId
+        && ledgerOf(d.ledgerId).blocked != true;   // a blocked customer cannot add entries
+    }
+    match /entries/{e} {
+      allow read: if signedIn() && (resource.data.custId == me() || resource.data.shopId == me());
+      allow create: if isCustomer() && validEntry(request.resource.data);
+      allow update: if signedIn() && (
+        // customer: can only strike an entry on a linked ledger (never edit amounts)
+        (resource.data.custId == me() && resource.data.shopId != null && resource.data.removed == false
+          && changed(['removed', 'seen']) && request.resource.data.removed == true && request.resource.data.seen == false)
+        ||
+        // shop owner: confirm received / flag / mark seen
+        (resource.data.shopId == me() && changed(['flagged', 'received', 'seen'])
+          && request.resource.data.flagged is bool && request.resource.data.received is bool
+          && request.resource.data.seen is bool)
+      );
+      allow delete: if signedIn() && resource.data.custId == me() && resource.data.shopId == null;
+    }
+
+    // ── notes: the owner's private nickname for a customer ──
+    match /notes/{l} {
+      allow read: if signedIn() && resource.data.shopId == me();
+      allow create: if isOwner() && request.resource.data.keys().hasOnly(['shopId', 'nick'])
+        && request.resource.data.shopId == me() && request.resource.data.nick is string
+        && request.resource.data.nick.size() <= 60
+        && ledgerOf(l).shopId == me();
+      allow update: if signedIn() && resource.data.shopId == me()
+        && request.resource.data.keys().hasOnly(['shopId', 'nick'])
+        && request.resource.data.shopId == me() && request.resource.data.nick is string
+        && request.resource.data.nick.size() <= 60;
+    }
+
+    // ── recovery: write-only for the owner; only the Cloud Function (Admin SDK) reads it ──
+    match /recovery/{u} {
+      allow create, update: if signedIn() && me() == u && isOwner()
+        && request.resource.data.keys().hasOnly(['hash', 'attempts'])
+        && request.resource.data.hash is string && request.resource.data.attempts == 0;
+      allow read, delete: if false;
+    }
+
+    // everything else is closed
+    match /{document=**} { allow read, write: if false; }
+  }
+}
