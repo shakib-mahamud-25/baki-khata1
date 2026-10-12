@@ -1,4 +1,5 @@
 import './styles.css';
+import './install.js';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, configured, RECOVERY } from './firebase.js';
 import * as api from './api.js';
