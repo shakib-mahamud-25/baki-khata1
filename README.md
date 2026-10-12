@@ -88,3 +88,5 @@ Everything below can run on free plans for a campus-scale pilot:
 - Shop codes are not a security gate (anyone can already link to any listed shop); they identify the shop and make history import explicit.
 - The Bangla text is a first draft and should be reviewed by a native speaker.
 - The security rules were written carefully but have not been run against a live Firebase project by the author. Test them with the checklist in docs/SETUP.md before real use.
+
+- Shakib Mahamud
