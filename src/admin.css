@@ -1,0 +1,26 @@
+#root{max-width:1000px;margin:0 auto;padding:16px;width:100%;flex:1}
+.nf{text-align:center;padding:20vh 16px;color:var(--text3)}
+.nf h1{font:800 4.5rem 'Sora',sans-serif;cursor:default;user-select:none;-webkit-user-select:none;color:var(--text3)}
+.nf p{margin-top:6px}
+.lg{max-width:360px;margin:12vh auto 0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px}
+.lg h2{margin-bottom:14px;font-size:1.05rem}
+.ad-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.ad-tabs{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+.ad-tab{padding:8px 14px;border-radius:99px;background:var(--surface);border:1px solid var(--border);cursor:pointer;font:600 .84rem 'DM Sans',sans-serif;color:var(--text)}
+.ad-tab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px;margin-bottom:16px}
+.ad-stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.ad-stat small{display:block;color:var(--text3);font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.ad-stat b{font:700 1.2rem 'Sora',sans-serif}
+.ad-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.ad-card h3{font-size:.95rem;margin-bottom:10px}
+.ad-row{display:flex;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.ad-row:last-child{border-bottom:0}
+.ad-row .mid{flex:1;min-width:160px}.ad-row .mid b{display:block}.ad-row .mid small{color:var(--text3)}
+.ad-mini{padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);cursor:pointer;font:600 .78rem 'DM Sans',sans-serif;color:var(--text)}
+.ad-mini.red{color:var(--red)}.ad-mini.grn{color:var(--green)}
+.ad-note{font-size:.8rem;color:var(--text2);margin:0 0 10px}
+.ad-danger{border-color:var(--red)}
+.ad-ok{color:var(--green);font-weight:600}.ad-bad{color:var(--red);font-weight:600}
+textarea{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font:inherit;min-height:64px;margin-bottom:10px}
+select.ad-sel{padding:9px;border:1.5px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font:inherit;margin-bottom:10px}

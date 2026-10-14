@@ -1,0 +1,181 @@
+// PASTE THIS WHOLE FILE into Firebase console -> Firestore Database -> Rules -> Publish.
+// (It contains all the existing rules plus the admin additions.)
+rules_version = '2';
+
+// Baki Khata v2 security rules.
+// Customers write; shop owners read (and may confirm/flag payments, block, nickname).
+// Nobody can read another person's data. Roles are fixed at signup. Entries are never edited.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function roleOf(u) { return get(/databases/$(database)/documents/users/$(u)).data.role; }
+    function isCustomer() { return signedIn() && roleOf(me()) == 'c'; }
+    function isOwner() { return signedIn() && roleOf(me()) == 'o'; }
+    function changed(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function str(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
+
+    // ── admin: an account is an admin only if a document admins/<its uid> exists. That document can only
+    //    be created by hand in the Firebase console (no app or browser can write it). ──
+    function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(me())); }
+    function testMode() { return get(/databases/$(database)/documents/config/site).data.testMode == true; }
+    // the "delete test data" powers exist ONLY while config/site.testMode is true
+    function wipe() { return isAdmin() && testMode(); }
+
+    // ── users: private profile, role can never change ──
+    match /users/{u} {
+      allow read: if signedIn() && (me() == u || isAdmin());
+      allow delete: if wipe();
+      allow create: if signedIn() && me() == u
+        && request.resource.data.keys().hasOnly(['role', 'name', 'area', 'lang', 'createdAt', 'shopName', 'phone'])
+        && request.resource.data.role in ['c', 'o']
+        && str(request.resource.data.name, 60) && str(request.resource.data.area, 80)
+        && request.resource.data.lang in ['en', 'bn']
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.role == 'o'
+              ? str(request.resource.data.shopName, 60)
+              : !('shopName' in request.resource.data));
+      allow update: if signedIn() && me() == u
+        && request.resource.data.role == resource.data.role
+        && changed(['lang', 'name', 'area', 'phone']);
+    }
+
+    // ── shops: public directory (any signed-in user may list; only the owner writes) ──
+    match /shops/{s} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && me() == s && roleOf(s) == 'o'
+        && !exists(/databases/$(database)/documents/suspendedShops/$(s))   // a suspended shop cannot re-list itself
+        && request.resource.data.keys().hasOnly(['shopName', 'ownerName', 'area'])
+        && str(request.resource.data.shopName, 60) && str(request.resource.data.ownerName, 60)
+        && str(request.resource.data.area, 80);
+      // admin: toggle the verified badge (a trailing check mark in the name), suspend (delete) and restore
+      allow update: if isAdmin() && changed(['shopName']) && str(request.resource.data.shopName, 64);
+      allow create: if isAdmin() && exists(/databases/$(database)/documents/suspendedShops/$(s))
+        && request.resource.data.keys().hasOnly(['shopName', 'ownerName', 'area']);
+      allow delete: if isAdmin();
+    }
+
+    // ── suspendedShops: shops the admin has removed from the directory ──
+    match /suspendedShops/{s} {
+      allow read, create, delete: if isAdmin();
+    }
+
+    // ── ledgers: customer <-> shop (shopId == null means a private ledger) ──
+    function validLedger(d, id) {
+      return d.keys().hasOnly(['custId', 'shopId', 'name', 'shopName', 'custName', 'custArea', 'custPhone', 'blocked', 'createdAt'])
+        && d.custId == me() && d.blocked == false && d.createdAt == request.time
+        && str(d.custName, 60) && str(d.custArea, 80)
+        && (d.custPhone == null || str(d.custPhone, 20))
+        && (
+          (d.shopId == null && str(d.name, 60) && d.shopName == null)
+          ||
+          (d.shopId is string && id == me() + '_' + d.shopId   // one link per customer+shop
+            && exists(/databases/$(database)/documents/shops/$(d.shopId))
+            && d.name == null && str(d.shopName, 60))
+        );
+    }
+    match /ledgers/{l} {
+      allow read: if signedIn() && (resource.data.custId == me() || resource.data.shopId == me()
+        || (isAdmin() && (resource.data.shopId != null || testMode())));   // admin: registered shops only (all while testing)
+      allow delete: if wipe();
+      allow create: if isCustomer() && validLedger(request.resource.data, l);
+      // the shop owner may only toggle "blocked"
+      allow update: if signedIn() && resource.data.shopId == me()
+        && changed(['blocked']) && request.resource.data.blocked is bool;
+      // only private ledgers can be deleted; linked history stays with the shop
+      allow delete: if signedIn() && resource.data.custId == me() && resource.data.shopId == null;
+    }
+
+    // ── entries: expense ('e') / payment ('p'), money in integer paisa ──
+    function ledgerOf(id) { return getAfter(/databases/$(database)/documents/ledgers/$(id)).data; }
+    function validEntry(d) {
+      return d.keys().hasOnly(['ledgerId', 'custId', 'shopId', 'kind', 'amount', 'desc', 'date', 'removed', 'flagged', 'received', 'seen', 'createdAt', 'imported'])
+        && d.custId == me() && d.kind in ['e', 'p']
+        && (!('imported' in d) || (d.imported == true && d.shopId != null))   // history copied from a private ledger
+        && d.amount is int && d.amount > 0 && d.amount <= 1000000000
+        && d.desc is string && d.desc.size() <= 200
+        && d.date is string && d.date.size() == 10
+        && d.removed == false && d.flagged == false && d.received == false
+        && d.seen == (d.shopId == null)
+        && d.createdAt == request.time
+        && ledgerOf(d.ledgerId).custId == me()
+        && ledgerOf(d.ledgerId).shopId == d.shopId
+        && ledgerOf(d.ledgerId).blocked != true    // a blocked customer cannot add entries
+        && (d.shopId == null || exists(/databases/$(database)/documents/shops/$(d.shopId)));   // none for a suspended shop
+    }
+    match /entries/{e} {
+      allow read: if signedIn() && (resource.data.custId == me() || resource.data.shopId == me()
+        || (isAdmin() && (resource.data.shopId != null || testMode())));   // admin: registered shops only (all while testing)
+      allow delete: if wipe();
+      allow create: if isCustomer() && validEntry(request.resource.data);
+      allow update: if signedIn() && (
+        // customer: can only strike an entry on a linked ledger (never edit amounts)
+        (resource.data.custId == me() && resource.data.shopId != null && resource.data.removed == false
+          && changed(['removed', 'seen']) && request.resource.data.removed == true && request.resource.data.seen == false)
+        ||
+        // shop owner: confirm received / flag / mark seen
+        (resource.data.shopId == me() && changed(['flagged', 'received', 'seen'])
+          && request.resource.data.flagged is bool && request.resource.data.received is bool
+          && request.resource.data.seen is bool)
+      );
+      allow delete: if signedIn() && resource.data.custId == me() && resource.data.shopId == null;
+    }
+
+    // ── shopCodes: private per-shop code. Anyone signed in can look up ONE code they were given;
+    //    nobody can list codes except an owner listing their own. ──
+    match /shopCodes/{c} {
+      allow get: if signedIn();
+      allow list: if signedIn() && resource.data.shopId == me();
+      allow list, delete: if wipe();
+      allow create: if isOwner() && c.matches('^[A-HJ-NP-Z2-9]{8}$')
+        && request.resource.data.keys().hasOnly(['shopId']) && request.resource.data.shopId == me();
+      allow delete: if signedIn() && resource.data.shopId == me();
+    }
+
+    // ── notes: the owner's private nickname for a customer ──
+    match /notes/{l} {
+      allow read: if signedIn() && resource.data.shopId == me();
+      allow read, delete: if wipe();
+      allow create: if isOwner() && request.resource.data.keys().hasOnly(['shopId', 'nick'])
+        && request.resource.data.shopId == me() && request.resource.data.nick is string
+        && request.resource.data.nick.size() <= 60
+        && ledgerOf(l).shopId == me();
+      allow update: if signedIn() && resource.data.shopId == me()
+        && request.resource.data.keys().hasOnly(['shopId', 'nick'])
+        && request.resource.data.shopId == me() && request.resource.data.nick is string
+        && request.resource.data.nick.size() <= 60;
+    }
+
+    // ── recovery: write-only for the owner; only the Cloud Function (Admin SDK) reads it ──
+    match /recovery/{u} {
+      allow create, update: if signedIn() && me() == u && isOwner()
+        && request.resource.data.keys().hasOnly(['hash', 'attempts'])
+        && request.resource.data.hash is string && request.resource.data.attempts == 0;
+      allow read: if false;
+      allow delete: if wipe();
+    }
+
+    // ── admins: you may read your own record (to prove you are an admin). Nobody can write it. ──
+    match /admins/{a} {
+      allow read: if signedIn() && me() == a;
+      allow write: if false;
+    }
+
+    // ── config/site: public announcement + maintenance + the test-mode switch ──
+    //  - anyone may read it (so the banner / maintenance screen can show before login)
+    //  - only an admin may change it, and the test-mode switch can only go ON -> OFF from the app;
+    //    turning it back on needs the Firebase console.
+    match /config/{c} {
+      allow read: if true;
+      allow update: if isAdmin() && c == 'site'
+        && request.resource.data.keys().hasOnly(['testMode', 'announcement', 'maintenance'])
+        && request.resource.data.testMode is bool
+        && (request.resource.data.testMode == false || resource.data.testMode == true);
+      allow create, delete: if false;
+    }
+
+    // everything else is closed
+    match /{document=**} { allow read, write: if false; }
+  }
+}
